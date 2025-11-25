@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    ports:
+      - "9000:8000"
+    environment:
+      - WHISPER__MODEL=Systran/faster-whisper-base
+      - WHISPER__INFERENCE_DEVICE=cpu
+    restart: unless-stopped
+
+  transcription:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - HOST=0.0.0.0
+      - WHISPER_ENDPOINT=http://whisper:8000/v1/audio/transcriptions
+      - LANGUAGE=ar
+      - CHUNK_DURATION=3
+    depends_on:
+      - whisper
+    restart: unless-stopped

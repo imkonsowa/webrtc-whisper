@@ -1,0 +1,37 @@
+# Binaries
+backend/transcription-server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Models
+backend/models/*.bin
+
+# Environment
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test
+*.test
+coverage.out
+coverage.html
+
+# Temp
+tmp/
+*.tmp
