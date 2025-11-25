@@ -1,13 +1,9 @@
 # Binaries
 backend/transcription-server
 *.exe
-*.exe~
 *.dll
 *.so
 *.dylib
-
-# Models
-backend/models/*.bin
 
 # Environment
 .env
@@ -31,6 +27,7 @@ Thumbs.db
 *.test
 coverage.out
 coverage.html
+test/
 
 # Temp
 tmp/

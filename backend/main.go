@@ -6,53 +6,33 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 
 	"webrtc-transcription/backend/signaling"
 	"webrtc-transcription/backend/transcription"
-	rtc "webrtc-transcription/backend/webrtc"
-
-	"github.com/pion/webrtc/v4"
 )
 
 func main() {
 	cfg := LoadConfig()
 	whisper := transcription.NewWhisper(cfg.WhisperEndpoint, cfg.Language)
 
-	var (
-		procs = make(map[string]*transcription.Processor)
-		mu    sync.Mutex
-	)
-
-	factory := func(sid string, onText func(string)) (*webrtc.PeerConnection, error) {
-		proc := transcription.NewProcessor(whisper, cfg.SampleRate, cfg.ChunkDuration, onText)
-		mu.Lock()
-		procs[sid] = proc
-		mu.Unlock()
-
-		pc, err := rtc.NewPeerConnection(cfg.STUNServers)
-		if err != nil {
-			return nil, err
-		}
-
-		pc.OnTrack(func(t *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-			go rtc.HandleTrack(t, proc.Add)
-		})
-
-		pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-			if s == webrtc.PeerConnectionStateClosed || s == webrtc.PeerConnectionStateDisconnected {
-				mu.Lock()
-				if p := procs[sid]; p != nil {
-					p.Flush()
-					delete(procs, sid)
-				}
-				mu.Unlock()
+	handler := func(sessionID string, wav []byte, onText func(string)) {
+		go func() {
+			text, err := whisper.Transcribe(wav)
+			if err != nil {
+				log.Printf("transcribe error: %v", err)
+				return
 			}
-		})
-		return pc, nil
+			if text != "" {
+				onText(text)
+			}
+		}()
 	}
 
-	http.Handle("/ws", signaling.NewHandler(factory))
+	inputRate := 48000
+	outputRate := cfg.SampleRate
+	chunkMs := cfg.ChunkDuration * 1000
+
+	http.Handle("/ws", signaling.NewHandler(handler, inputRate, outputRate, chunkMs))
 	http.Handle("/", http.FileServer(http.Dir(cfg.FrontendDir)))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

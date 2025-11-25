@@ -1,4 +1,4 @@
-FROM golang:1.21-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 WORKDIR /build
 
@@ -22,7 +22,7 @@ COPY frontend/ ./frontend
 
 ENV PORT=8080
 ENV HOST=0.0.0.0
-ENV WHISPER_ENDPOINT=http://whisper:9000/v1/audio/transcriptions
+ENV WHISPER_ENDPOINT=http://whisper:8000/v1/audio/transcriptions
 
 EXPOSE 8080
 

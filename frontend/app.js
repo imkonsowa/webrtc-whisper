@@ -1,10 +1,10 @@
 class TranscriptionApp {
     constructor() {
         this.ws = null;
-        this.peer = null;
+        this.audioContext = null;
+        this.workletNode = null;
         this.stream = null;
         this.sessionId = this.generateId();
-        this.isRecording = false;
 
         this.startBtn = document.getElementById('startBtn');
         this.stopBtn = document.getElementById('stopBtn');
@@ -44,25 +44,29 @@ class TranscriptionApp {
             this.setStatus('Connecting...', 'yellow');
             this.connectWebSocket();
         } catch (err) {
-            console.error('mic access failed:', err);
+            console.error('mic error:', err);
             this.setStatus('Mic denied', 'red');
         }
     }
 
     connectWebSocket() {
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        this.ws = new WebSocket(protocol + '//' + location.host + '/ws');
+        const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
+        this.ws = new WebSocket(url);
 
         this.ws.onopen = () => {
-            this.ws.send(JSON.stringify({
-                type: 'join',
-                sessionId: this.sessionId
-            }));
+            this.ws.send(JSON.stringify({ type: 'join', sessionId: this.sessionId }));
         };
 
         this.ws.onmessage = (e) => {
             const msg = JSON.parse(e.data);
-            this.handleMessage(msg);
+            if (msg.type === 'ready') {
+                this.startAudioCapture();
+            } else if (msg.type === 'transcription') {
+                this.addTranscription(msg.text);
+            } else if (msg.type === 'error') {
+                console.error('server:', msg.message);
+                this.setStatus('Error', 'red');
+            }
         };
 
         this.ws.onclose = () => {
@@ -70,94 +74,37 @@ class TranscriptionApp {
             this.cleanup();
         };
 
-        this.ws.onerror = (err) => {
-            console.error('ws error:', err);
-            this.setStatus('Error', 'red');
+        this.ws.onerror = () => this.setStatus('Connection error', 'red');
+    }
+
+    async startAudioCapture() {
+        this.audioContext = new AudioContext({ sampleRate: 48000 });
+
+        await this.audioContext.audioWorklet.addModule('audio-processor.js');
+
+        const source = this.audioContext.createMediaStreamSource(this.stream);
+        this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-processor');
+
+        this.workletNode.port.onmessage = (e) => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(e.data);
+            }
         };
-    }
 
-    handleMessage(msg) {
-        switch (msg.type) {
-            case 'ready':
-                this.setupPeer();
-                break;
+        source.connect(this.workletNode);
+        this.workletNode.connect(this.audioContext.destination);
 
-            case 'answer':
-                if (this.peer) {
-                    this.peer.signal({ type: 'answer', sdp: msg.sdp });
-                }
-                break;
-
-            case 'candidate':
-                if (this.peer && msg.candidate) {
-                    this.peer.signal({ candidate: msg.candidate });
-                }
-                break;
-
-            case 'transcription':
-                this.addTranscription(msg.text);
-                break;
-
-            case 'error':
-                console.error('server error:', msg.message);
-                this.setStatus('Error: ' + msg.code, 'red');
-                break;
-        }
-    }
-
-    setupPeer() {
-        this.peer = new SimplePeer({
-            initiator: true,
-            stream: this.stream,
-            config: {
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-            },
-            offerOptions: {
-                offerToReceiveAudio: false,
-                offerToReceiveVideo: false
-            }
-        });
-
-        this.peer.on('signal', (data) => {
-            if (data.type === 'offer') {
-                this.ws.send(JSON.stringify({
-                    type: 'offer',
-                    sessionId: this.sessionId,
-                    sdp: data.sdp
-                }));
-            } else if (data.candidate) {
-                this.ws.send(JSON.stringify({
-                    type: 'candidate',
-                    sessionId: this.sessionId,
-                    candidate: data.candidate
-                }));
-            }
-        });
-
-        this.peer.on('connect', () => {
-            this.setStatus('Recording', 'green');
-            this.isRecording = true;
-            this.startBtn.disabled = true;
-            this.stopBtn.disabled = false;
-        });
-
-        this.peer.on('error', (err) => {
-            console.error('peer error:', err);
-            this.setStatus('Connection failed', 'red');
-        });
-
-        this.peer.on('close', () => {
-            this.cleanup();
-        });
+        this.setStatus('Recording', 'green');
+        this.startBtn.disabled = true;
+        this.stopBtn.disabled = false;
     }
 
     addTranscription(text) {
         if (!text || !text.trim()) return;
-
-        const segment = document.createElement('span');
-        segment.className = 'new-segment';
-        segment.textContent = text + ' ';
-        this.transcriptionEl.appendChild(segment);
+        const span = document.createElement('span');
+        span.className = 'new-segment';
+        span.textContent = text + ' ';
+        this.transcriptionEl.appendChild(span);
         this.transcriptionEl.scrollTop = this.transcriptionEl.scrollHeight;
     }
 
@@ -167,13 +114,17 @@ class TranscriptionApp {
     }
 
     cleanup() {
-        this.isRecording = false;
         this.startBtn.disabled = false;
         this.stopBtn.disabled = true;
 
-        if (this.peer) {
-            this.peer.destroy();
-            this.peer = null;
+        if (this.workletNode) {
+            this.workletNode.disconnect();
+            this.workletNode = null;
+        }
+
+        if (this.audioContext) {
+            this.audioContext.close();
+            this.audioContext = null;
         }
 
         if (this.stream) {

@@ -2,7 +2,6 @@ package transcription
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,11 +18,11 @@ func NewWhisper(endpoint, lang string) *Whisper {
 	return &Whisper{endpoint, lang}
 }
 
-func (w *Whisper) Transcribe(samples []float32) (string, error) {
+func (w *Whisper) Transcribe(audio []byte) (string, error) {
 	var body bytes.Buffer
 	wr := multipart.NewWriter(&body)
-	part, _ := wr.CreateFormFile("file", "a.wav")
-	_, _ = part.Write(toWav(samples))
+	part, _ := wr.CreateFormFile("file", "audio.wav")
+	_, _ = part.Write(audio)
 	_ = wr.WriteField("language", w.lang)
 	_ = wr.Close()
 
@@ -46,25 +45,4 @@ func (w *Whisper) Transcribe(samples []float32) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(r.Text), nil
-}
-
-func toWav(samples []float32) []byte {
-	n := len(samples)
-	buf := new(bytes.Buffer)
-	buf.WriteString("RIFF")
-	_ = binary.Write(buf, binary.LittleEndian, uint32(36+n*2))
-	buf.WriteString("WAVEfmt ")
-	_ = binary.Write(buf, binary.LittleEndian, uint32(16))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(1))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(1))
-	_ = binary.Write(buf, binary.LittleEndian, uint32(16000))
-	_ = binary.Write(buf, binary.LittleEndian, uint32(32000))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(2))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(16))
-	buf.WriteString("data")
-	_ = binary.Write(buf, binary.LittleEndian, uint32(n*2))
-	for _, s := range samples {
-		_ = binary.Write(buf, binary.LittleEndian, int16(s*32767))
-	}
-	return buf.Bytes()
 }
