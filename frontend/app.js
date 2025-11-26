@@ -78,25 +78,29 @@ class TranscriptionApp {
     }
 
     async startAudioCapture() {
-        this.audioContext = new AudioContext({ sampleRate: 48000 });
+        try {
+            this.audioContext = new AudioContext({ sampleRate: 48000 });
+            await this.audioContext.audioWorklet.addModule('audio-processor.js');
 
-        await this.audioContext.audioWorklet.addModule('audio-processor.js');
+            const source = this.audioContext.createMediaStreamSource(this.stream);
+            this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-processor');
 
-        const source = this.audioContext.createMediaStreamSource(this.stream);
-        this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-processor');
+            this.workletNode.port.onmessage = (e) => {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(e.data);
+                }
+            };
 
-        this.workletNode.port.onmessage = (e) => {
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(e.data);
-            }
-        };
+            source.connect(this.workletNode);
+            this.workletNode.connect(this.audioContext.destination);
 
-        source.connect(this.workletNode);
-        this.workletNode.connect(this.audioContext.destination);
-
-        this.setStatus('Recording', 'green');
-        this.startBtn.disabled = true;
-        this.stopBtn.disabled = false;
+            this.setStatus('Recording', 'green');
+            this.startBtn.disabled = true;
+            this.stopBtn.disabled = false;
+        } catch (err) {
+            console.error('audio capture error:', err);
+            this.setStatus('Audio error', 'red');
+        }
     }
 
     addTranscription(text) {

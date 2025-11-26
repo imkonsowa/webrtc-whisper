@@ -15,9 +15,9 @@ type VAD struct {
 
 func NewVAD(sampleRate int) *VAD {
 	return &VAD{
-		threshold:    500,
-		minSpeechMs:  100,
-		minSilenceMs: 300,
+		threshold:    50,
+		minSpeechMs:  50,
+		minSilenceMs: 500,
 		sampleRate:   sampleRate,
 	}
 }
