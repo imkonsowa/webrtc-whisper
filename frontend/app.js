@@ -1,28 +1,24 @@
+const { Room, RoomEvent, Track } = LivekitClient;
+
 class TranscriptionApp {
     constructor() {
-        this.ws = null;
-        this.audioContext = null;
-        this.workletNode = null;
-        this.stream = null;
-        this.sessionId = this.generateId();
+        this.room = null;
+        this.currentRoom = null;
 
-        this.startBtn = document.getElementById('startBtn');
-        this.stopBtn = document.getElementById('stopBtn');
+        this.joinBtn = document.getElementById('joinBtn');
+        this.leaveBtn = document.getElementById('leaveBtn');
         this.clearBtn = document.getElementById('clearBtn');
+        this.roomInput = document.getElementById('roomInput');
+        this.nameInput = document.getElementById('nameInput');
         this.statusDot = document.getElementById('statusDot');
         this.statusText = document.getElementById('statusText');
-        this.sessionIdEl = document.getElementById('sessionId');
+        this.roomNameEl = document.getElementById('roomName');
+        this.participantsEl = document.getElementById('participants');
         this.transcriptionEl = document.getElementById('transcription');
 
-        this.sessionIdEl.textContent = this.sessionId;
-
-        this.startBtn.onclick = () => this.start();
-        this.stopBtn.onclick = () => this.stop();
+        this.joinBtn.onclick = () => this.join();
+        this.leaveBtn.onclick = () => this.leave();
         this.clearBtn.onclick = () => this.clear();
-    }
-
-    generateId() {
-        return 'sess_' + Math.random().toString(36).substr(2, 9);
     }
 
     setStatus(status, color) {
@@ -30,119 +26,145 @@ class TranscriptionApp {
         this.statusDot.className = 'w-3 h-3 rounded-full bg-' + color + '-400';
     }
 
-    async start() {
+    async join() {
+        const roomName = this.roomInput.value.trim() || undefined;
+        const participantName = this.nameInput.value.trim() || 'User';
+
+        this.setStatus('Connecting...', 'yellow');
+
         try {
-            this.stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    sampleRate: 48000
-                },
-                video: false
+            const res = await fetch('/api/rooms/' + (roomName || 'default') + '/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ participantName })
             });
 
-            this.setStatus('Connecting...', 'yellow');
-            this.connectWebSocket();
-        } catch (err) {
-            console.error('mic error:', err);
-            this.setStatus('Mic denied', 'red');
-        }
-    }
-
-    connectWebSocket() {
-        const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
-        this.ws = new WebSocket(url);
-
-        this.ws.onopen = () => {
-            this.ws.send(JSON.stringify({ type: 'join', sessionId: this.sessionId }));
-        };
-
-        this.ws.onmessage = (e) => {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'ready') {
-                this.startAudioCapture();
-            } else if (msg.type === 'transcription') {
-                this.addTranscription(msg.text);
-            } else if (msg.type === 'error') {
-                console.error('server:', msg.message);
-                this.setStatus('Error', 'red');
+            if (!res.ok) {
+                throw new Error('Failed to get token');
             }
-        };
 
-        this.ws.onclose = () => {
-            this.setStatus('Disconnected', 'gray');
-            this.cleanup();
-        };
+            const { token, livekitUrl } = await res.json();
 
-        this.ws.onerror = () => this.setStatus('Connection error', 'red');
-    }
+            this.room = new Room({
+                adaptiveStream: true,
+                dynacast: true,
+            });
 
-    async startAudioCapture() {
-        try {
-            this.audioContext = new AudioContext({ sampleRate: 48000 });
-            await this.audioContext.audioWorklet.addModule('audio-processor.js');
+            this.setupRoomEvents();
 
-            const source = this.audioContext.createMediaStreamSource(this.stream);
-            this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-processor');
+            await this.room.connect(livekitUrl, token);
 
-            this.workletNode.port.onmessage = (e) => {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(e.data);
-                }
-            };
+            await this.room.localParticipant.setMicrophoneEnabled(true);
 
-            source.connect(this.workletNode);
-            this.workletNode.connect(this.audioContext.destination);
+            this.currentRoom = roomName || 'default';
+            this.roomNameEl.textContent = this.currentRoom;
+            this.setStatus('Connected', 'green');
+            this.joinBtn.disabled = true;
+            this.leaveBtn.disabled = false;
+            this.roomInput.disabled = true;
+            this.nameInput.disabled = true;
 
-            this.setStatus('Recording', 'green');
-            this.startBtn.disabled = true;
-            this.stopBtn.disabled = false;
+            this.updateParticipants();
         } catch (err) {
-            console.error('audio capture error:', err);
-            this.setStatus('Audio error', 'red');
+            console.error('join error:', err);
+            this.setStatus('Connection failed', 'red');
         }
     }
 
-    addTranscription(text) {
+    setupRoomEvents() {
+        this.room.on(RoomEvent.ParticipantConnected, () => {
+            this.updateParticipants();
+        });
+
+        this.room.on(RoomEvent.ParticipantDisconnected, () => {
+            this.updateParticipants();
+        });
+
+        this.room.on(RoomEvent.DataReceived, (payload, participant) => {
+            try {
+                const msg = JSON.parse(new TextDecoder().decode(payload));
+                if (msg.type === 'transcription') {
+                    this.addTranscription(msg.participantName, msg.text);
+                }
+            } catch (e) {
+                console.error('data parse error:', e);
+            }
+        });
+
+        this.room.on(RoomEvent.Disconnected, () => {
+            this.handleDisconnect();
+        });
+
+        this.room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+            this.updateSpeakingState(speakers);
+        });
+    }
+
+    updateParticipants() {
+        if (!this.room) {
+            this.participantsEl.innerHTML = '<p class="text-xs text-gray-400">No participants</p>';
+            return;
+        }
+
+        const participants = [this.room.localParticipant, ...this.room.remoteParticipants.values()]
+            .filter(p => p.identity !== 'transcription-bot');
+
+        if (participants.length === 0) {
+            this.participantsEl.innerHTML = '<p class="text-xs text-gray-400">No participants</p>';
+            return;
+        }
+
+        this.participantsEl.innerHTML = participants.map(p => {
+            const isLocal = p === this.room.localParticipant;
+            return `
+                <div class="participant flex items-center gap-2 p-2 rounded border" data-sid="${p.sid}">
+                    <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                    <span class="text-sm">${p.name || p.identity}${isLocal ? ' (you)' : ''}</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    updateSpeakingState(speakers) {
+        document.querySelectorAll('.participant').forEach(el => {
+            el.classList.remove('speaking');
+        });
+
+        speakers.forEach(speaker => {
+            const el = document.querySelector(`.participant[data-sid="${speaker.sid}"]`);
+            if (el) {
+                el.classList.add('speaking');
+            }
+        });
+    }
+
+    addTranscription(speakerName, text) {
         if (!text || !text.trim()) return;
-        const span = document.createElement('span');
-        span.className = 'new-segment';
-        span.textContent = text + ' ';
-        this.transcriptionEl.appendChild(span);
+
+        const div = document.createElement('div');
+        div.className = 'new-segment mb-2';
+        div.innerHTML = `<span class="text-xs text-gray-500 ml-2">[${speakerName}]</span> ${text}`;
+        this.transcriptionEl.appendChild(div);
         this.transcriptionEl.scrollTop = this.transcriptionEl.scrollHeight;
     }
 
-    stop() {
-        this.cleanup();
-        this.setStatus('Stopped', 'gray');
+    leave() {
+        if (this.room) {
+            this.room.disconnect();
+        }
+        this.handleDisconnect();
     }
 
-    cleanup() {
-        this.startBtn.disabled = false;
-        this.stopBtn.disabled = true;
-
-        if (this.workletNode) {
-            this.workletNode.disconnect();
-            this.workletNode = null;
-        }
-
-        if (this.audioContext) {
-            this.audioContext.close();
-            this.audioContext = null;
-        }
-
-        if (this.stream) {
-            this.stream.getTracks().forEach(t => t.stop());
-            this.stream = null;
-        }
-
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.close();
-        }
-        this.ws = null;
-
-        this.sessionId = this.generateId();
-        this.sessionIdEl.textContent = this.sessionId;
+    handleDisconnect() {
+        this.room = null;
+        this.currentRoom = null;
+        this.roomNameEl.textContent = '-';
+        this.setStatus('Disconnected', 'gray');
+        this.joinBtn.disabled = false;
+        this.leaveBtn.disabled = true;
+        this.roomInput.disabled = false;
+        this.nameInput.disabled = false;
+        this.updateParticipants();
     }
 
     clear() {
